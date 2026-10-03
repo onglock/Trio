@@ -12,6 +12,10 @@ jobs:
   build:
     runs-on: macos-latest
     timeout-minutes: 240
+    env:
+      # Настоящий номер команды Apple владельца сборки (Apple ID kirill, аккаунт onglock).
+      # SideStore дописывает его к идентификатору приложения при установке — см. шаг упаковки.
+      APPLE_TEAM_ID: 6F7G8P4DWX
 
     steps:
       - name: Show runner and Xcode versions
@@ -70,20 +74,34 @@ jobs:
           find Payload -name '_CodeSignature' -type d -prune -exec rm -rf {} + || true
           find Payload -name 'embedded.mobileprovision' -delete || true
 
-          # проверка связки "телефон <-> часы": без совпадения этих двух значений
-          # приложение на часах не установится / не увидит телефон
+          # ---- связка "телефон <-> часы" (ошибка InvalidCompanionAppBundleIdentifier) ----
+          # SideStore при установке дописывает к идентификатору приложения настоящий номер
+          # команды Apple: в диалоге "AppID Customization" поле уже заполнено как
+          # "<id приложения>.<номер команды>", галочка Append Team ID включена.
+          # Info.plist приложения на часах SideStore не правит, поэтому вписываем
+          # ожидаемое значение сразу: <id телефона>.<номер команды>.
           MAIN_ID="$(plutil -extract CFBundleIdentifier raw Payload/Trio.app/Info.plist)"
           WATCH_PLIST="Payload/Trio.app/Watch/Trio Watch App.app/Info.plist"
           WATCH_ID="$(plutil -extract CFBundleIdentifier raw "$WATCH_PLIST")"
-          WATCH_COMPANION="$(plutil -extract WKCompanionAppBundleIdentifier raw "$WATCH_PLIST")"
-          echo "iPhone: CFBundleIdentifier            = $MAIN_ID"
-          echo "Watch:  CFBundleIdentifier            = $WATCH_ID"
-          echo "Watch:  WKCompanionAppBundleIdentifier = $WATCH_COMPANION"
-          if [ "$MAIN_ID" != "$WATCH_COMPANION" ]; then
-            echo "::error::WKCompanionAppBundleIdentifier ($WATCH_COMPANION) не совпадает с CFBundleIdentifier приложения на iPhone ($MAIN_ID)"
-            exit 1
+          BEFORE="$(plutil -extract WKCompanionAppBundleIdentifier raw "$WATCH_PLIST")"
+          EXPECTED="$MAIN_ID.$APPLE_TEAM_ID"
+
+          echo "ДО ПРАВКИ:    телефон=$MAIN_ID"
+          echo "ДО ПРАВКИ:    часы WKCompanionAppBundleIdentifier=$BEFORE"
+          plutil -replace WKCompanionAppBundleIdentifier -string "$EXPECTED" "$WATCH_PLIST"
+          AFTER="$(plutil -extract WKCompanionAppBundleIdentifier raw "$WATCH_PLIST")"
+          echo "ПОСЛЕ ПРАВКИ: часы WKCompanionAppBundleIdentifier=$AFTER"
+          echo "ОЖИДАЕТСЯ:    $EXPECTED"
+
+          if [ "$AFTER" != "$EXPECTED" ]; then
+            echo "::error::WKCompanionAppBundleIdentifier ($AFTER) не равен ожидаемому ($EXPECTED)"; exit 1
           fi
-          echo "OK: связка телефон <-> часы совпадает"
+          echo "OK: часы будут ждать ровно тот идентификатор, который выдаст SideStore"
+
+          # все ссылки на наш идентификатор в любых Info.plist (для проверки, что чужого нет)
+          echo "--- все идентификаторы org.nightscout.ONGLOCK001 в Info.plist ---"
+          find Payload -name Info.plist -print0 | xargs -0 -I{} plutil -p {} 2>/dev/null \
+            | grep -E "org\.nightscout\.ONGLOCK001" | sed 's/^ *//' | sort -u
 
           zip -qry Trio.ipa Payload
           ls -lh Trio.ipa
