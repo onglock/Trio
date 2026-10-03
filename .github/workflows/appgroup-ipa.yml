@@ -69,8 +69,9 @@ jobs:
           ENT="$PWD/appgroup.entitlements"
           plutil -create xml1 "$ENT"
           plutil -insert 'com\.apple\.security\.application-groups' -array "$ENT"
-          plutil -insert 'com\.apple\.security\.application-groups\.0' -string "$APP_GROUP" "$ENT"
-          echo "--- entitlements template ---"; cat "$ENT"
+          plutil -insert 'com\.apple\.security\.application-groups.0' -string "$APP_GROUP" "$ENT"
+          echo "--- entitlements template ---"; plutil -p "$ENT"
+          # точка перед .0 — это разделитель пути plutil (индекс в массиве), её нельзя экранировать
 
           # черновая ad-hoc подпись всего дерева, чтобы вложенные фреймворки были запечатаны
           codesign --force --deep --sign - Payload/Trio.app
@@ -81,11 +82,18 @@ jobs:
             codesign --force --sign - --entitlements "$ENT" "$b"
           done
 
-          echo "--- права главного приложения ---"
-          codesign -d --entitlements :- Payload/Trio.app
+          # жёсткая проверка: без вшитой общей папки сборка считается неудачной
+          fail=0
           for b in $(find Payload \( -name '*.appex' -o -name '*.app' \)); do
-            echo "--- $b ---"; codesign -d --entitlements :- "$b" 2>&1 | grep -i "application-groups" || echo "НЕТ app group"
+            codesign -d --entitlements :- "$b" 2>/dev/null > "$PWD/check.plist"
+            val="$(plutil -extract 'com\.apple\.security\.application-groups.0' raw "$PWD/check.plist" 2>/dev/null || true)"
+            if [ "$val" != "$APP_GROUP" ]; then
+              echo "::error::$b: общая папка не вшита (получено: '$val')"; fail=1
+            else
+              echo "OK: $b -> $val"
+            fi
           done
+          [ "$fail" -eq 0 ] || exit 1
           codesign --verify --deep --strict Payload/Trio.app || echo "::warning::codesign --verify warned"
 
           zip -qry Trio-appgroup.ipa Payload
