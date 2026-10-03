@@ -1,0 +1,108 @@
+name: Build IPA with App Group request
+
+# Второй вариант: неподписанная сборка + "заявка" (ad-hoc) на общую папку данных,
+# чтобы SideStore мог создать App Group и выдать её приложению.
+# Запускается вручную: Actions -> "Build IPA with App Group request" -> Run workflow.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_GROUP: group.org.nightscout.0000000000.trio.trio-app-group
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Show runner and Xcode versions
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      - name: Checkout Trio with all submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Remove signing requirements
+        run: |
+          cat > ConfigOverride.xcconfig <<'EOF'
+          DEVELOPER_TEAM = 0000000000
+          DEVELOPMENT_TEAM = 0000000000
+          EOF
+
+      - name: Build unsigned Release archive
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -workspace Trio.xcworkspace \
+            -scheme Trio \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/Trio.xcarchive" \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            EXPANDED_CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=0000000000 \
+            BUNDLE_IDENTIFIER=org.nightscout.0000000000.trio \
+            TRIO_APP_GROUP_ID=group.org.nightscout.0000000000.trio.trio-app-group \
+            2>&1 | tee build.log
+
+      - name: Package and embed App Group request
+        run: |
+          set -euo pipefail
+          APP="$(find build/Trio.xcarchive/Products/Applications -maxdepth 1 -name '*.app' -print -quit)"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          find Payload -name 'embedded.mobileprovision' -delete || true
+
+          ENT="$PWD/appgroup.entitlements"
+          plutil -create xml1 "$ENT"
+          plutil -insert 'com\.apple\.security\.application-groups' -array "$ENT"
+          plutil -insert 'com\.apple\.security\.application-groups\.0' -string "$APP_GROUP" "$ENT"
+          echo "--- entitlements template ---"; cat "$ENT"
+
+          # черновая ad-hoc подпись всего дерева, чтобы вложенные фреймворки были запечатаны
+          codesign --force --deep --sign - Payload/Trio.app
+
+          # подписываем изнутри наружу: каждому бундлу — заявка на общую папку
+          find Payload \( -name '*.appex' -o -name '*.app' \) | sort -r | while IFS= read -r b; do
+            echo "sign (app group): $b"
+            codesign --force --sign - --entitlements "$ENT" "$b"
+          done
+
+          echo "--- права главного приложения ---"
+          codesign -d --entitlements :- Payload/Trio.app
+          for b in $(find Payload \( -name '*.appex' -o -name '*.app' \)); do
+            echo "--- $b ---"; codesign -d --entitlements :- "$b" 2>&1 | grep -i "application-groups" || echo "НЕТ app group"
+          done
+          codesign --verify --deep --strict Payload/Trio.app || echo "::warning::codesign --verify warned"
+
+          zip -qry Trio-appgroup.ipa Payload
+          ls -lh Trio-appgroup.ipa
+          unzip -l Trio-appgroup.ipa | grep -c "_CodeSignature" || true
+
+      - name: Upload Trio-appgroup.ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: trio-appgroup-ipa
+          path: Trio-appgroup.ipa
+          retention-days: 14
+
+      - name: Upload build log when the build fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-appgroup
+          path: build.log
+          retention-days: 14
