@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  APP_GROUP: group.org.nightscout.0000000000.trio.trio-app-group
+  APP_GROUP: group.org.nightscout.ONGLOCK001.trio.trio-app-group
 
 jobs:
   build:
@@ -32,8 +32,8 @@ jobs:
       - name: Remove signing requirements
         run: |
           cat > ConfigOverride.xcconfig <<'EOF'
-          DEVELOPER_TEAM = 0000000000
-          DEVELOPMENT_TEAM = 0000000000
+          DEVELOPER_TEAM = ONGLOCK001
+          DEVELOPMENT_TEAM = ONGLOCK001
           EOF
 
       - name: Build unsigned Release archive
@@ -52,9 +52,9 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
             EXPANDED_CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM=0000000000 \
-            BUNDLE_IDENTIFIER=org.nightscout.0000000000.trio \
-            TRIO_APP_GROUP_ID=group.org.nightscout.0000000000.trio.trio-app-group \
+            DEVELOPMENT_TEAM=ONGLOCK001 \
+            BUNDLE_IDENTIFIER=org.nightscout.ONGLOCK001.trio \
+            TRIO_APP_GROUP_ID=group.org.nightscout.ONGLOCK001.trio.trio-app-group \
             2>&1 | tee build.log
 
       - name: Package and embed App Group request
