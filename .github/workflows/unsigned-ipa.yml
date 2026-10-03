@@ -32,8 +32,8 @@ jobs:
           # Подставляем фиктивный (несуществующий) ID команды Apple, чтобы Xcode
           # не искал реальный аккаунт разработчика. Ничего не подписывается.
           cat > ConfigOverride.xcconfig <<'EOF'
-          DEVELOPER_TEAM = 0000000000
-          DEVELOPMENT_TEAM = 0000000000
+          DEVELOPER_TEAM = ONGLOCK001
+          DEVELOPMENT_TEAM = ONGLOCK001
           EOF
           cat ConfigOverride.xcconfig
 
@@ -53,9 +53,9 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
             EXPANDED_CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM=0000000000 \
-            BUNDLE_IDENTIFIER=org.nightscout.0000000000.trio \
-            TRIO_APP_GROUP_ID=group.org.nightscout.0000000000.trio.trio-app-group \
+            DEVELOPMENT_TEAM=ONGLOCK001 \
+            BUNDLE_IDENTIFIER=org.nightscout.ONGLOCK001.trio \
+            TRIO_APP_GROUP_ID=group.org.nightscout.ONGLOCK001.trio.trio-app-group \
             2>&1 | tee build.log
 
       - name: Package into Trio.ipa
@@ -69,6 +69,22 @@ jobs:
           # полностью убираем следы подписи, если они появились
           find Payload -name '_CodeSignature' -type d -prune -exec rm -rf {} + || true
           find Payload -name 'embedded.mobileprovision' -delete || true
+
+          # проверка связки "телефон <-> часы": без совпадения этих двух значений
+          # приложение на часах не установится / не увидит телефон
+          MAIN_ID="$(plutil -extract CFBundleIdentifier raw Payload/Trio.app/Info.plist)"
+          WATCH_PLIST="Payload/Trio.app/Watch/Trio Watch App.app/Info.plist"
+          WATCH_ID="$(plutil -extract CFBundleIdentifier raw "$WATCH_PLIST")"
+          WATCH_COMPANION="$(plutil -extract WKCompanionAppBundleIdentifier raw "$WATCH_PLIST")"
+          echo "iPhone: CFBundleIdentifier            = $MAIN_ID"
+          echo "Watch:  CFBundleIdentifier            = $WATCH_ID"
+          echo "Watch:  WKCompanionAppBundleIdentifier = $WATCH_COMPANION"
+          if [ "$MAIN_ID" != "$WATCH_COMPANION" ]; then
+            echo "::error::WKCompanionAppBundleIdentifier ($WATCH_COMPANION) не совпадает с CFBundleIdentifier приложения на iPhone ($MAIN_ID)"
+            exit 1
+          fi
+          echo "OK: связка телефон <-> часы совпадает"
+
           zip -qry Trio.ipa Payload
           ls -lh Trio.ipa
           unzip -l Trio.ipa | head -15
