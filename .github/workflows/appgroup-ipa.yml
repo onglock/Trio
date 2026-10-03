@@ -76,23 +76,22 @@ jobs:
           # черновая ad-hoc подпись всего дерева, чтобы вложенные фреймворки были запечатаны
           codesign --force --deep --sign - Payload/Trio.app
 
-          # подписываем изнутри наружу: каждому бундлу — заявка на общую папку
-          find Payload \( -name '*.appex' -o -name '*.app' \) | sort -r | while IFS= read -r b; do
+          # подписываем изнутри наружу и сразу проверяем каждый бундл.
+          # Пути содержат пробелы ("Trio Watch App.app"), поэтому читаем строки целиком,
+          # а < <(find ...) держит цикл в текущем shell, чтобы счётчик ошибок работал.
+          fail=0
+          while IFS= read -r b; do
             echo "sign (app group): $b"
             codesign --force --sign - --entitlements "$ENT" "$b"
-          done
-
-          # жёсткая проверка: без вшитой общей папки сборка считается неудачной
-          fail=0
-          for b in $(find Payload \( -name '*.appex' -o -name '*.app' \)); do
             codesign -d --entitlements :- "$b" 2>/dev/null > "$PWD/check.plist"
             val="$(plutil -extract 'com\.apple\.security\.application-groups.0' raw "$PWD/check.plist" 2>/dev/null || true)"
             if [ "$val" != "$APP_GROUP" ]; then
-              echo "::error::$b: общая папка не вшита (получено: '$val')"; fail=1
+              echo "::error::общая папка не вшита в $b (получено: '$val')"
+              fail=$((fail + 1))
             else
               echo "OK: $b -> $val"
             fi
-          done
+          done < <(find Payload \( -name '*.appex' -o -name '*.app' \) | sort -r)
           [ "$fail" -eq 0 ] || exit 1
           codesign --verify --deep --strict Payload/Trio.app || echo "::warning::codesign --verify warned"
 
