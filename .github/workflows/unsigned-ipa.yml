@@ -58,7 +58,7 @@ jobs:
             CODE_SIGN_ENTITLEMENTS="" \
             EXPANDED_CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM=ONGLOCK001 \
-            BUNDLE_IDENTIFIER=org.nightscout.ONGLOCK001.trio \
+            BUNDLE_IDENTIFIER=org.nightscout.ONGLOCK001.trio.$APPLE_TEAM_ID \
             TRIO_APP_GROUP_ID=group.org.nightscout.ONGLOCK001.trio.trio-app-group \
             2>&1 | tee build.log
 
@@ -74,29 +74,59 @@ jobs:
           find Payload -name '_CodeSignature' -type d -prune -exec rm -rf {} + || true
           find Payload -name 'embedded.mobileprovision' -delete || true
 
-          # ---- связка "телефон <-> часы" (ошибка InvalidCompanionAppBundleIdentifier) ----
-          # SideStore при установке дописывает к идентификатору приложения настоящий номер
-          # команды Apple: в диалоге "AppID Customization" поле уже заполнено как
-          # "<id приложения>.<номер команды>", галочка Append Team ID включена.
-          # Info.plist приложения на часах SideStore не правит, поэтому вписываем
-          # ожидаемое значение сразу: <id телефона>.<номер команды>.
+          # ---- идентификаторы под SideStore ----
+          # Ошибки, которые лечит этот блок: WatchKitAppBundleIDNotPrefixed
+          # (идентификатор часов обязан начинаться с "<идентификатор телефона>.")
+          # и InvalidCompanionAppBundleIdentifier (часы обязаны ссылаться на телефон).
+          # SideStore при установке подставляет новый идентификатор телефона как префикс
+          # для вложенных частей, а часам префикс не правит. Поэтому номер команды Apple
+          # (APPLE_TEAM_ID) уже вшит в идентификаторы на этапе сборки: тогда после установки
+          # ничего не расходится.
           MAIN_ID="$(plutil -extract CFBundleIdentifier raw Payload/Trio.app/Info.plist)"
           WATCH_PLIST="Payload/Trio.app/Watch/Trio Watch App.app/Info.plist"
+          COMPLICATION_PLIST="Payload/Trio.app/Watch/Trio Watch App.app/PlugIns/Trio Watch Complication Extension.appex/Info.plist"
+          LIVE_PLIST="Payload/Trio.app/PlugIns/LiveActivityExtension.appex/Info.plist"
+
           WATCH_ID="$(plutil -extract CFBundleIdentifier raw "$WATCH_PLIST")"
-          BEFORE="$(plutil -extract WKCompanionAppBundleIdentifier raw "$WATCH_PLIST")"
-          EXPECTED="$MAIN_ID.$APPLE_TEAM_ID"
+          COMPLICATION_ID="$(plutil -extract CFBundleIdentifier raw "$COMPLICATION_PLIST")"
+          LIVE_ID="$(plutil -extract CFBundleIdentifier raw "$LIVE_PLIST")"
+          COMPANION_BEFORE="$(plutil -extract WKCompanionAppBundleIdentifier raw "$WATCH_PLIST")"
 
-          echo "ДО ПРАВКИ:    телефон=$MAIN_ID"
-          echo "ДО ПРАВКИ:    часы WKCompanionAppBundleIdentifier=$BEFORE"
-          plutil -replace WKCompanionAppBundleIdentifier -string "$EXPECTED" "$WATCH_PLIST"
-          AFTER="$(plutil -extract WKCompanionAppBundleIdentifier raw "$WATCH_PLIST")"
-          echo "ПОСЛЕ ПРАВКИ: часы WKCompanionAppBundleIdentifier=$AFTER"
-          echo "ОЖИДАЕТСЯ:    $EXPECTED"
+          echo "=== ДО ПРАВКИ ==="
+          echo "телефон                             = $MAIN_ID"
+          echo "часы                                = $WATCH_ID"
+          echo "циферблат                           = $COMPLICATION_ID"
+          echo "Live Activity                       = $LIVE_ID"
+          echo "часы WKCompanionAppBundleIdentifier = $COMPANION_BEFORE"
 
-          if [ "$AFTER" != "$EXPECTED" ]; then
-            echo "::error::WKCompanionAppBundleIdentifier ($AFTER) не равен ожидаемому ($EXPECTED)"; exit 1
+          # связка часов должна указывать ровно на идентификатор телефона
+          if [ "$COMPANION_BEFORE" != "$MAIN_ID" ]; then
+            plutil -replace WKCompanionAppBundleIdentifier -string "$MAIN_ID" "$WATCH_PLIST"
           fi
-          echo "OK: часы будут ждать ровно тот идентификатор, который выдаст SideStore"
+          COMPANION_AFTER="$(plutil -extract WKCompanionAppBundleIdentifier raw "$WATCH_PLIST")"
+
+          fail=0
+          check_prefix() {  # $1 = значение, $2 = требуемый префикс, $3 = что это
+            case "$1" in
+              "$2".*) echo "OK: $3 — '$1' начинается с '$2.'" ;;
+              *) echo "::error::$3: '$1' НЕ начинается с '$2.'"; fail=1 ;;
+            esac
+          }
+          check_prefix "$WATCH_ID" "$MAIN_ID" "Bundle ID часов"
+          check_prefix "$COMPLICATION_ID" "$WATCH_ID" "Bundle ID циферблата"
+          check_prefix "$LIVE_ID" "$MAIN_ID" "Bundle ID Live Activity"
+          if [ "$COMPANION_AFTER" != "$MAIN_ID" ]; then
+            echo "::error::WKCompanionAppBundleIdentifier ('$COMPANION_AFTER') не равен Bundle ID телефона ('$MAIN_ID')"; fail=1
+          else
+            echo "OK: WKCompanionAppBundleIdentifier совпадает с Bundle ID телефона"
+          fi
+
+          echo "=== ПОСЛЕ ПРАВКИ ==="
+          echo "телефон                             = $MAIN_ID"
+          echo "часы                                = $WATCH_ID"
+          echo "часы WKCompanionAppBundleIdentifier = $COMPANION_AFTER (было $COMPANION_BEFORE)"
+          [ "$fail" -eq 0 ] || exit 1
+          echo "OK: префиксы вложенных частей и связка часов в порядке"
 
           # все ссылки на наш идентификатор в любых Info.plist (для проверки, что чужого нет)
           echo "--- все идентификаторы org.nightscout.ONGLOCK001 в Info.plist ---"
@@ -105,7 +135,7 @@ jobs:
 
           zip -qry Trio.ipa Payload
           ls -lh Trio.ipa
-          unzip -l Trio.ipa | head -15
+          unzip -l Trio.ipa | head -15 || true
 
       - name: Upload Trio.ipa
         uses: actions/upload-artifact@v4
